@@ -1,0 +1,752 @@
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  */
+#include "main.h"
+#include <string.h>
+#include "adc.h"
+#include "i2c.h"
+#include "spi.h"
+#include "usart.h"
+#include "gpio.h"
+
+#include "eeprom.h"
+#include "heater.h"
+#include "gui.h"
+#include "nfc.h"
+#include "pressure.h"
+#include "T.h"
+#include "voice.h"
+#include "app_ble.h"
+#include "app_state.h"
+
+static uint8_t g_app_uid[7] = {0};
+static uint8_t g_app_uid_len = 0U;
+static EEPROM_CardRecord_t g_app_card_record;
+static uint8_t g_app_running = 0U;
+static uint8_t g_app_phase = APP_STATE_IDLE;
+static uint32_t g_app_last_temp_tick = 0U;
+static uint32_t g_app_last_time_tick = 0U;
+static uint32_t g_app_remain_seconds = 0U;
+static uint32_t g_session_first_epoch = 0U;
+static uint32_t g_session_start_epoch = 0U;
+static uint32_t g_session_accum_seconds = 0U;
+static AppState g_ble_state;
+static uint32_t g_ble_last_status_tick = 0U;
+
+void SystemClock_Config(void);
+
+static void APP_ShowCardParamPage(const EEPROM_CardRecord_t *record);
+static void APP_ShowUidNumber(const uint8_t *uid, uint8_t uid_len);
+static void APP_LoadCardRecord(const uint8_t *uid, uint8_t uid_len, EEPROM_CardRecord_t *record);
+static void APP_SaveCardParam(uint8_t set_temp, uint16_t set_work_time, uint16_t set_sit_time);
+static void APP_StartRun(void);
+static void APP_StartRunFromBle(void);
+static void APP_StopRun(void);
+static void APP_PauseRun(void);
+static void APP_ResumeRun(void);
+static void APP_FinishRun(void);
+static void APP_RunTask(void);
+static void APP_BleSyncFromApp(void);
+static void APP_BleApplyState(const AppState *before_state);
+static HAL_StatusTypeDef APP_BleSaveState(const AppState *state);
+static void APP_BleReportStatus(void);
+static uint32_t APP_GetEpoch(void);
+static uint8_t APP_GetSessionCount(void);
+static uint8_t APP_GetSession(uint8_t index, uint32_t *start, uint32_t *end, uint16_t *duration);
+static void APP_ClearSessions(void);
+static void APP_SessionStart(void);
+static void APP_SessionPause(void);
+static void APP_SessionResume(void);
+static void APP_SessionEnd(void);
+
+static uint32_t APP_GetEpoch(void)
+{
+  uint32_t epoch;
+
+  epoch = AppBle_GetEpoch();
+  if (epoch != 0U)
+  {
+    return epoch;
+  }
+
+  return (HAL_GetTick() / 1000U) + 1U;
+}
+
+static uint8_t APP_GetSessionCount(void)
+{
+  return EEPROM_GetSessionCount();
+}
+
+static uint8_t APP_GetSession(uint8_t index, uint32_t *start, uint32_t *end, uint16_t *duration)
+{
+  EEPROM_SessionRecord_t record;
+
+  if ((start == NULL) || (end == NULL) || (duration == NULL))
+  {
+    return 0U;
+  }
+
+  if (EEPROM_GetSessionByIndex(index, &record) == 0U)
+  {
+    return 0U;
+  }
+
+  *start = record.start_epoch;
+  *end = record.end_epoch;
+  *duration = record.duration_min;
+  return 1U;
+}
+
+static void APP_ClearSessions(void)
+{
+  EEPROM_ClearSessionLog();
+  g_session_first_epoch = 0U;
+  g_session_start_epoch = 0U;
+  g_session_accum_seconds = 0U;
+}
+
+static void APP_SessionStart(void)
+{
+  uint32_t now_epoch;
+
+  now_epoch = APP_GetEpoch();
+  g_session_first_epoch = now_epoch;
+  g_session_start_epoch = now_epoch;
+  g_session_accum_seconds = 0U;
+}
+
+static void APP_SessionPause(void)
+{
+  uint32_t now_epoch;
+
+  if (g_session_start_epoch == 0U)
+  {
+    return;
+  }
+
+  now_epoch = APP_GetEpoch();
+  if (now_epoch >= g_session_start_epoch)
+  {
+    g_session_accum_seconds += (now_epoch - g_session_start_epoch);
+  }
+  g_session_start_epoch = 0U;
+}
+
+static void APP_SessionResume(void)
+{
+  if (g_session_first_epoch == 0U)
+  {
+    g_session_first_epoch = APP_GetEpoch();
+  }
+
+  g_session_start_epoch = APP_GetEpoch();
+}
+
+static void APP_SessionEnd(void)
+{
+  EEPROM_SessionRecord_t record;
+  uint32_t now_epoch;
+  uint32_t total_seconds;
+
+  if ((g_session_first_epoch == 0U) && (g_session_start_epoch == 0U) && (g_session_accum_seconds == 0U))
+  {
+    return;
+  }
+
+  now_epoch = APP_GetEpoch();
+  total_seconds = g_session_accum_seconds;
+  if ((g_session_start_epoch != 0U) && (now_epoch >= g_session_start_epoch))
+  {
+    total_seconds += (now_epoch - g_session_start_epoch);
+  }
+
+  if (g_session_first_epoch == 0U)
+  {
+    g_session_first_epoch = now_epoch;
+  }
+
+  record.start_epoch = g_session_first_epoch;
+  record.end_epoch = now_epoch;
+  record.duration_min = (uint16_t)((total_seconds + 59U) / 60U);
+  (void)EEPROM_AppendSession(&record);
+
+  g_session_first_epoch = 0U;
+  g_session_start_epoch = 0U;
+  g_session_accum_seconds = 0U;
+}
+
+static void APP_ShowUidNumber(const uint8_t *uid, uint8_t uid_len)
+{
+  uint32_t number = 0U;
+  uint8_t i;
+
+  if ((uid == NULL) || (uid_len == 0U))
+  {
+    GUI_HMI_SetValue("n3", 0);
+    return;
+  }
+
+  for (i = 0; i < uid_len; i++)
+  {
+    number = (number << 4) ^ uid[i];
+  }
+
+  GUI_HMI_SetValue("n3", (int32_t)number);
+}
+
+static void APP_ShowCardParamPage(const EEPROM_CardRecord_t *record)
+{
+  if (record == NULL)
+  {
+    return;
+  }
+
+  GUI_HMI_SendCmd("page 0");
+  HAL_Delay(30U);
+  APP_ShowUidNumber(record->uid, record->uid_len);
+  GUI_HMI_SetValue("n0", record->temp);
+  GUI_HMI_SetValue("n1", record->work_time);
+  GUI_HMI_SetValue("n2", record->sit_time);
+}
+
+static void APP_LoadCardRecord(const uint8_t *uid, uint8_t uid_len, EEPROM_CardRecord_t *record)
+{
+  if ((uid == NULL) || (uid_len == 0U) || (record == NULL))
+  {
+    return;
+  }
+
+  if (EEPROM_FindCardByUid(uid, uid_len, record, NULL) == 0U)
+  {
+    EEPROM_LoadDefaultRecord(uid, uid_len, record);
+  }
+}
+
+static void APP_SaveCardParam(uint8_t set_temp, uint16_t set_work_time, uint16_t set_sit_time)
+{
+  if (g_app_uid_len == 0U)
+  {
+    return;
+  }
+
+  g_app_card_record.uid_len = g_app_uid_len;
+  memcpy(g_app_card_record.uid, g_app_uid, g_app_uid_len);
+  g_app_card_record.temp = set_temp;
+  g_app_card_record.work_time = set_work_time;
+  g_app_card_record.sit_time = set_sit_time;
+  (void)EEPROM_SaveCardRecord(&g_app_card_record, NULL);
+
+  GUI_HMI_SetValue("n0", g_app_card_record.temp);
+  GUI_HMI_SetValue("n1", g_app_card_record.work_time);
+  GUI_HMI_SetValue("n2", g_app_card_record.sit_time);
+  VOICE_PlayFile(1U, 1U);
+}
+
+static void APP_StartRun(void)
+{
+  if (g_app_uid_len == 0U)
+  {
+    return;
+  }
+
+  APP_StartRunFromBle();
+}
+
+static void APP_StartRunFromBle(void)
+{
+  int16_t temperature_x10;
+
+  if (g_app_card_record.work_time == 0U)
+  {
+    GUI_Print("Start rejected: work_time is 0. Set time first.\r\n");
+    VOICE_PlayFile(1U, 1U);
+    APP_ShowCardParamPage(&g_app_card_record);
+    return;
+  }
+
+  GUI_HMI_SendCmd("page 1");
+  HAL_Delay(30U);
+  GUI_HMI_SetValue("n1", (int32_t)g_app_card_record.work_time);
+  GUI_HMI_SetValue("n2", (int32_t)g_app_card_record.sit_time);
+  if (T_ReadTemperatureX10(&temperature_x10) == 1U)
+  {
+    GUI_HMI_SetValue("x0", temperature_x10);
+  }
+  else
+  {
+    GUI_HMI_SetValue("x0", 999);
+  }
+  VOICE_PlayFile(1U, 3U);
+
+  g_app_running = 1U;
+  g_app_phase = APP_STATE_PREHEAT;
+  g_app_last_temp_tick = 0U;
+  g_app_last_time_tick = HAL_GetTick();
+  g_app_remain_seconds = (uint32_t)g_app_card_record.work_time * 60U;
+  HEATER_RunStart(g_app_card_record.temp);
+  PRESSURE_RunStart(g_app_card_record.sit_time);
+  APP_SessionStart();
+  APP_BleReportStatus();
+}
+
+static void APP_StopRun(void)
+{
+  uint8_t was_active;
+
+  if ((g_app_running == 0U) && (g_app_phase == APP_STATE_IDLE))
+  {
+    return;
+  }
+
+  was_active = ((g_app_running != 0U) || (g_app_phase == APP_STATE_PAUSE)) ? 1U : 0U;
+
+  g_app_running = 0U;
+  g_app_phase = APP_STATE_IDLE;
+  g_app_last_temp_tick = 0U;
+  g_app_last_time_tick = 0U;
+  g_app_remain_seconds = 0U;
+  HEATER_RunStop();
+  PRESSURE_RunStop();
+  if (was_active != 0U)
+  {
+    VOICE_PlayFile(1U, 4U);
+  }
+
+  APP_SessionEnd();
+
+  if (g_app_uid_len != 0U)
+  {
+    APP_LoadCardRecord(g_app_uid, g_app_uid_len, &g_app_card_record);
+  }
+  APP_ShowCardParamPage(&g_app_card_record);
+  APP_BleReportStatus();
+}
+
+static void APP_PauseRun(void)
+{
+  if (g_app_running == 0U)
+  {
+    return;
+  }
+
+  g_app_running = 0U;
+  g_app_phase = APP_STATE_PAUSE;
+  HEATER_RunStop();
+  VOICE_PlayFile(1U, 4U);
+  APP_SessionPause();
+  APP_BleReportStatus();
+}
+
+static void APP_ResumeRun(void)
+{
+  if (g_app_phase != APP_STATE_PAUSE)
+  {
+    return;
+  }
+
+  if (g_app_remain_seconds == 0U)
+  {
+    g_app_remain_seconds = (uint32_t)g_app_card_record.work_time * 60U;
+  }
+
+  g_app_running = 1U;
+  g_app_phase = APP_STATE_PREHEAT;
+  g_app_last_temp_tick = 0U;
+  g_app_last_time_tick = HAL_GetTick();
+  HEATER_RunStart(g_app_card_record.temp);
+  GUI_HMI_SetValue("n1", (int32_t)((g_app_remain_seconds + 59U) / 60U));
+  VOICE_PlayFile(1U, 3U);
+  APP_SessionResume();
+  APP_BleReportStatus();
+}
+
+static void APP_FinishRun(void)
+{
+  if (g_app_running == 0U)
+  {
+    return;
+  }
+
+  g_app_running = 0U;
+  g_app_phase = APP_STATE_FINISHED;
+  g_app_last_temp_tick = 0U;
+  g_app_last_time_tick = 0U;
+  g_app_remain_seconds = 0U;
+  HEATER_RunStop();
+  PRESSURE_RunStop();
+  VOICE_PlayFile(1U, 4U);
+  APP_SessionEnd();
+
+  if (g_app_uid_len != 0U)
+  {
+    APP_LoadCardRecord(g_app_uid, g_app_uid_len, &g_app_card_record);
+  }
+  APP_ShowCardParamPage(&g_app_card_record);
+  APP_BleReportStatus();
+}
+
+static void APP_RunTask(void)
+{
+  int16_t temperature_x10;
+  uint32_t now_tick;
+
+  if (g_app_running == 0U)
+  {
+    return;
+  }
+
+  now_tick = HAL_GetTick();
+  if ((now_tick - g_app_last_temp_tick) < 500U)
+  {
+    return;
+  }
+  g_app_last_temp_tick = now_tick;
+
+  if (T_ReadTemperatureX10(&temperature_x10) == 1U)
+  {
+    GUI_HMI_SetValue("x0", temperature_x10);
+    HEATER_Update(temperature_x10, 1U, PRESSURE_IsOccupied());
+  }
+  else
+  {
+    GUI_HMI_SetValue("x0", 999);
+    HEATER_Update(0, 0U, PRESSURE_IsOccupied());
+  }
+
+  if (g_app_remain_seconds > 0U)
+  {
+    if ((now_tick - g_app_last_time_tick) >= 1000U)
+    {
+      uint32_t elapsed_seconds;
+
+      elapsed_seconds = (now_tick - g_app_last_time_tick) / 1000U;
+      g_app_last_time_tick += elapsed_seconds * 1000U;
+
+      if (elapsed_seconds >= g_app_remain_seconds)
+      {
+        g_app_remain_seconds = 0U;
+      }
+      else
+      {
+        g_app_remain_seconds -= elapsed_seconds;
+      }
+
+      GUI_HMI_SetValue("n1", (int32_t)((g_app_remain_seconds + 59U) / 60U));
+      GUI_HMI_SetValue("n2", (int32_t)PRESSURE_GetRemainMinutes());
+
+      if (g_app_remain_seconds == 0U)
+      {
+        APP_FinishRun();
+      }
+    }
+  }
+}
+
+static void APP_BleSyncFromApp(void)
+{
+  int16_t temperature_x10;
+
+  g_ble_state.mode = 1U;
+  g_ble_state.temp_set = g_app_card_record.temp;
+  if ((g_app_running != 0U) || (g_app_phase == APP_STATE_PAUSE))
+  {
+    g_ble_state.minutes_left = (uint16_t)((g_app_remain_seconds + 59U) / 60U);
+  }
+  else
+  {
+    g_ble_state.minutes_left = g_app_card_record.work_time;
+  }
+  g_ble_state.pressure_present = PRESSURE_IsOccupied();
+  g_ble_state.pressure_adc = PRESSURE_GetAdcValue();
+  g_ble_state.nfc_present = (g_app_uid_len != 0U) ? 1U : 0U;
+  g_ble_state.nfc_fault = NFC_IsReady() ? 0U : 1U;
+  g_ble_state.nfc_uid_len = g_app_uid_len;
+  memset(g_ble_state.nfc_uid, 0, sizeof(g_ble_state.nfc_uid));
+  memcpy(g_ble_state.nfc_uid, g_app_uid, g_app_uid_len);
+  g_ble_state.fault_code = 0U;
+
+  if (T_ReadTemperatureX10(&temperature_x10) == 1U)
+  {
+    AppState_UpdateMeasuredTemp(&g_ble_state, temperature_x10, 0U);
+  }
+  else
+  {
+    AppState_UpdateMeasuredTemp(&g_ble_state, 0, 1U);
+    g_ble_state.fault_code = 0U;
+  }
+
+  if (g_ble_state.fault_code == 0U)
+  {
+    if (g_app_running != 0U)
+    {
+      g_ble_state.state = (HEATER_GetPhase() == HEATER_PHASE_KEEP_WARM)
+                              ? APP_STATE_KEEP_WARM
+                              : APP_STATE_PREHEAT;
+    }
+    else
+    {
+      g_ble_state.state = g_app_phase;
+    }
+  }
+}
+
+static HAL_StatusTypeDef APP_BleSaveState(const AppState *state)
+{
+  if (state == NULL)
+  {
+    return HAL_ERROR;
+  }
+
+  g_app_card_record.temp = state->temp_set;
+  g_app_card_record.work_time = state->minutes_left;
+  g_app_card_record.sit_time = state->minutes_left;
+  if ((g_app_uid_len != 0U) && (g_app_card_record.uid_len == 0U))
+  {
+    g_app_card_record.uid_len = g_app_uid_len;
+    memcpy(g_app_card_record.uid, g_app_uid, g_app_uid_len);
+  }
+
+  if (g_app_uid_len == 0U)
+  {
+    return HAL_OK;
+  }
+
+  return (EEPROM_SaveCardRecord(&g_app_card_record, NULL) != 0U) ? HAL_OK : HAL_ERROR;
+}
+
+static void APP_BleApplyState(const AppState *before_state)
+{
+  uint8_t desired;
+
+  if (before_state == NULL)
+  {
+    return;
+  }
+
+  desired = g_ble_state.state;
+
+  if ((g_app_running == 0U) && (g_app_phase != APP_STATE_PAUSE))
+  {
+    if (g_app_card_record.temp != g_ble_state.temp_set)
+    {
+      g_app_card_record.temp = g_ble_state.temp_set;
+      GUI_HMI_SetValue("n0", g_app_card_record.temp);
+    }
+
+    if (g_app_card_record.work_time != g_ble_state.minutes_left)
+    {
+      g_app_card_record.work_time = g_ble_state.minutes_left;
+      GUI_HMI_SetValue("n1", g_app_card_record.work_time);
+    }
+  }
+
+  if (desired == before_state->state)
+  {
+    return;
+  }
+
+  if (desired == APP_STATE_PAUSE)
+  {
+    if (g_app_running != 0U)
+    {
+      APP_PauseRun();
+    }
+  }
+  else if ((desired == APP_STATE_PREHEAT) || (desired == APP_STATE_KEEP_WARM))
+  {
+    if (g_app_phase == APP_STATE_PAUSE)
+    {
+      APP_ResumeRun();
+    }
+    else if (g_app_running == 0U)
+    {
+      APP_StartRunFromBle();
+    }
+  }
+  else if (desired == APP_STATE_IDLE)
+  {
+    if ((g_app_running != 0U) || (g_app_phase != APP_STATE_IDLE))
+    {
+      APP_StopRun();
+    }
+  }
+}
+
+static void APP_BleReportStatus(void)
+{
+  APP_BleSyncFromApp();
+  g_ble_last_status_tick = HAL_GetTick();
+  AppBle_SendStatus(&g_ble_state);
+}
+
+int main(void)
+{
+  HAL_Init();
+  SystemClock_Config();
+
+  MX_GPIO_Init();
+  MX_I2C1_Init();
+  MX_UART4_Init();
+  MX_SPI1_Init();
+  MX_I2C2_Init();
+  MX_USART3_UART_Init();
+  MX_ADC1_Init();
+  MX_USART2_UART_Init();
+
+  memset(g_app_uid, 0, sizeof(g_app_uid));
+  g_app_uid_len = 0U;
+  memset(&g_app_card_record, 0, sizeof(g_app_card_record));
+  g_app_card_record.temp = 20U;
+  g_app_card_record.work_time = 0U;
+  g_app_card_record.sit_time = 0U;
+  g_app_running = 0U;
+  g_app_phase = APP_STATE_IDLE;
+  g_app_last_temp_tick = 0U;
+  g_app_last_time_tick = 0U;
+  g_app_remain_seconds = 0U;
+  g_session_first_epoch = 0U;
+  g_session_start_epoch = 0U;
+  g_session_accum_seconds = 0U;
+  AppState_Init(&g_ble_state);
+  g_ble_state.temp_set = 20U;
+  g_ble_state.minutes_left = 0U;
+  g_ble_last_status_tick = 0U;
+
+  GUI_HMI_Init();
+  HAL_Delay(500U);
+  EEPROM_Init();
+  HEATER_Init();
+  PRESSURE_Init();
+  T_Init();
+  VOICE_Init();
+  NFC_Init();
+  AppBle_Init(&huart2);
+  GUI_Print("Main flow ready. Waiting for NFC card...\r\n");
+  APP_BleReportStatus();
+
+  while (1)
+  {
+    uint8_t set_temp;
+    uint16_t set_work_time;
+    uint16_t set_sit_time;
+    uint8_t dummy_uid[7];
+    uint8_t dummy_uid_len;
+    AppState before_ble_state;
+    AppBle_Callbacks ble_callbacks;
+
+    NFC_Task();
+    GUI_HMI_Task();
+    PRESSURE_Task();
+    APP_RunTask();
+    HEATER_Task();
+
+    if (g_app_running == 0U)
+    {
+      if (NFC_FetchNewCard(g_app_uid, &g_app_uid_len) == 1U)
+      {
+        GUI_Print("New NFC card event received.\r\n");
+        APP_LoadCardRecord(g_app_uid, g_app_uid_len, &g_app_card_record);
+        APP_ShowCardParamPage(&g_app_card_record);
+        APP_BleReportStatus();
+      }
+    }
+    else
+    {
+      (void)NFC_FetchNewCard(dummy_uid, &dummy_uid_len);
+    }
+
+    if (GUI_HMI_FetchSetParam(&set_temp, &set_work_time, &set_sit_time) == 1U)
+    {
+      if (g_app_running == 0U)
+      {
+        APP_SaveCardParam(set_temp, set_work_time, set_sit_time);
+        APP_BleReportStatus();
+      }
+    }
+
+    if (GUI_HMI_FetchStartCommand() == 1U)
+    {
+      if (g_app_phase == APP_STATE_PAUSE)
+      {
+        APP_ResumeRun();
+      }
+      else if (g_app_running == 0U)
+      {
+        APP_StartRun();
+      }
+    }
+
+    if (GUI_HMI_FetchStopCommand() == 1U)
+    {
+      APP_StopRun();
+    }
+
+    APP_BleSyncFromApp();
+    before_ble_state = g_ble_state;
+    AppBle_Process();
+
+    ble_callbacks.get_epoch_fn = APP_GetEpoch;
+    ble_callbacks.get_session_count_fn = APP_GetSessionCount;
+    ble_callbacks.get_session_fn = APP_GetSession;
+    ble_callbacks.clear_sessions_fn = APP_ClearSessions;
+    AppBle_ProcessCommands(&g_ble_state, APP_BleSaveState, &ble_callbacks);
+
+    APP_BleApplyState(&before_ble_state);
+
+    if ((HAL_GetTick() - g_ble_last_status_tick) >= 1000U)
+    {
+      APP_BleReportStatus();
+    }
+  }
+}
+
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 4;
+  RCC_OscInitStruct.PLL.PLLN = 168;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+void Error_Handler(void)
+{
+  __disable_irq();
+  while (1)
+  {
+  }
+}
+
+#ifdef USE_FULL_ASSERT
+void assert_failed(uint8_t *file, uint32_t line)
+{
+}
+#endif
