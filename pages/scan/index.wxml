@@ -1,0 +1,52 @@
+<view class="scan-page">
+  <view class="scan-hero">
+    <view class="scan-hero__label">BLE</view>
+    <view class="scan-hero__title">蓝牙连接</view>
+    <view class="scan-hero__status">{{statusText}}</view>
+  </view>
+
+  <view class="scan-actions">
+    <button
+      wx:if="{{!isScanning}}"
+      class="scan-actions__button scan-actions__button--primary"
+      bindtap="startScan"
+      disabled="{{isConnecting}}"
+    >
+      开始扫描
+    </button>
+    <button
+      wx:else
+      class="scan-actions__button scan-actions__button--secondary"
+      bindtap="stopScan"
+      disabled="{{isConnecting}}"
+    >
+      停止扫描
+    </button>
+  </view>
+
+  <view wx:if="{{devices.length}}" class="device-list">
+    <block wx:for="{{devices}}" wx:key="deviceId">
+      <view
+        class="device-card {{isConnecting ? 'device-card--disabled' : ''}} {{connectingDeviceId === item.deviceId ? 'device-card--connecting' : ''}}"
+        data-id="{{item.deviceId}}"
+        bindtap="connect"
+      >
+        <view class="device-card__main">
+          <view class="device-card__name">{{item.displayName}}</view>
+          <view class="device-card__id">{{item.deviceId}}</view>
+        </view>
+        <view class="device-card__side">
+          <view class="device-card__signal">RSSI {{item.RSSI}}</view>
+          <view class="device-card__hint">
+            {{connectingDeviceId === item.deviceId ? '连接中...' : '点击连接'}}
+          </view>
+        </view>
+      </view>
+    </block>
+  </view>
+
+  <view wx:else class="scan-empty">
+    <view class="scan-empty__title">还没有发现设备</view>
+    <view class="scan-empty__desc">开始扫描后，附近蓝牙设备会显示在这里</view>
+  </view>
+</view>

@@ -1,0 +1,48 @@
+<view class="history-page">
+  <view class="history-hero">
+    <view class="history-hero__title">使用记录</view>
+    <view class="history-hero__status">{{statusText}}</view>
+    <view wx:if="{{totalMinutes > 0}}" class="history-hero__total">
+      累计使用 <text class="history-hero__total-num">{{totalMinutes}}</text> 分钟
+    </view>
+  </view>
+
+  <view class="history-actions">
+    <button class="history-btn history-btn--primary" bindtap="refresh" disabled="{{loading}}">刷新记录</button>
+    <button class="history-btn history-btn--danger" bindtap="clearHistory" disabled="{{loading}}">清除记录</button>
+  </view>
+
+  <view wx:if="{{loading}}" class="history-loading">
+    <view class="history-loading__text">{{statusText}}</view>
+  </view>
+
+  <view wx:elif="{{sessions.length === 0}}" class="history-empty">
+    <view class="history-empty__text">暂无使用记录</view>
+    <view class="history-empty__hint">连接设备后点击“刷新记录”</view>
+  </view>
+
+  <view wx:else class="session-list">
+    <block wx:for="{{sessions}}" wx:key="index">
+      <view class="session-card">
+        <view class="session-card__header">
+          <view class="session-card__date">{{item.startText}}</view>
+          <view class="session-card__duration">{{item.durationText}}</view>
+        </view>
+        <view class="session-card__body">
+          <view class="session-card__row">
+            <text class="session-card__label">开始时间</text>
+            <text class="session-card__value">{{item.startText}}</text>
+          </view>
+          <view class="session-card__row">
+            <text class="session-card__label">结束时间</text>
+            <text class="session-card__value">{{item.endText}}</text>
+          </view>
+          <view class="session-card__row">
+            <text class="session-card__label">使用时长</text>
+            <text class="session-card__value">{{item.durationText}}</text>
+          </view>
+        </view>
+      </view>
+    </block>
+  </view>
+</view>

@@ -1,0 +1,48 @@
+<view class="page">
+  <view class="hero">
+    <view class="hero__top">
+      <view class="hero__badge">{{connectionText}}</view>
+      <view class="hero__device">设备：{{deviceId}}</view>
+    </view>
+    <view class="hero__title">艾灸垫控制</view>
+    <view class="hero__state">{{stateText}}</view>
+    <view class="hero__desc">读取当前温度，设置加热时间，并控制加热的开始与停止。</view>
+  </view>
+
+  <view class="temp-card">
+    <view class="temp-card__label">当前温度</view>
+    <view class="temp-card__value">{{tempNow}}<text class="temp-card__unit">℃</text></view>
+    <view class="temp-card__target">目标 {{tempSet}}℃</view>
+    <view class="stepper">
+      <button class="stepper__btn" bindtap="decTemp">-</button>
+      <view class="stepper__display">{{tempSet}}℃</view>
+      <button class="stepper__btn" bindtap="incTemp">+</button>
+    </view>
+    <button class="action action--warm" bindtap="sendSetTemp">下发温度</button>
+  </view>
+
+  <view class="info-grid">
+    <view class="info-card">
+      <view class="info-card__label">加热时间</view>
+      <view class="info-card__value">{{minutesLeft}} 分钟</view>
+      <view class="stepper stepper--compact">
+        <button class="stepper__btn" bindtap="decMinutes">-5</button>
+        <input class="minutes-input" type="number" value="{{minutesInput}}" bindinput="onMinutesInput" placeholder="分钟" />
+        <button class="stepper__btn" bindtap="incMinutes">+5</button>
+      </view>
+      <button class="action action--soft" bindtap="sendSetTime">下发时间</button>
+    </view>
+  </view>
+
+  <view class="actions-panel">
+    <view class="actions-panel__title">加热控制</view>
+    <view class="actions-row">
+      <button class="action action--primary" bindtap="sendStart">开始加热</button>
+      <button class="action action--ghost" bindtap="sendStop">停止加热</button>
+    </view>
+    <view class="actions-row actions-row--sub">
+      <button class="action action--soft" bindtap="getStatus">刷新状态</button>
+      <button class="action action--soft" bindtap="openHistory">使用记录</button>
+    </view>
+  </view>
+</view>

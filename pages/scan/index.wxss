@@ -1,0 +1,156 @@
+.scan-page {
+  min-height: 100vh;
+  padding: 28rpx 24rpx 40rpx;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, #f6f8fb 0%, #edf2f7 100%);
+  color: #14213d;
+}
+
+.scan-hero,
+.scan-actions,
+.device-card,
+.scan-empty {
+  border-radius: 24rpx;
+  box-shadow: 0 16rpx 36rpx rgba(25, 40, 65, 0.08);
+}
+
+.scan-hero {
+  padding: 28rpx;
+  background: linear-gradient(135deg, #1f365c 0%, #32598c 100%);
+  color: #f7fbff;
+}
+
+.scan-hero__label {
+  display: inline-block;
+  padding: 8rpx 16rpx;
+  border-radius: 999rpx;
+  background: rgba(247, 251, 255, 0.14);
+  font-size: 22rpx;
+  letter-spacing: 4rpx;
+}
+
+.scan-hero__title {
+  margin-top: 22rpx;
+  font-size: 44rpx;
+  font-weight: 700;
+}
+
+.scan-hero__status {
+  margin-top: 16rpx;
+  font-size: 26rpx;
+  line-height: 1.6;
+  color: rgba(247, 251, 255, 0.9);
+}
+
+.scan-actions {
+  margin-top: 24rpx;
+  padding: 18rpx;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.scan-actions__button {
+  width: 100%;
+  margin: 0;
+  border-radius: 18rpx;
+  font-size: 28rpx;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 20rpx 24rpx;
+  box-sizing: border-box;
+}
+
+.scan-actions__button::after {
+  border: none;
+}
+
+.scan-actions__button--primary {
+  color: #f7fbff;
+  background: linear-gradient(135deg, #2f5f96 0%, #3f78b8 100%);
+}
+
+.scan-actions__button--secondary {
+  color: #26456c;
+  background: #dfeaf6;
+}
+
+.device-list {
+  margin-top: 24rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+
+.device-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 20rpx;
+  padding: 24rpx;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.device-card--connecting {
+  background: linear-gradient(135deg, #edf5ff 0%, #ffffff 100%);
+  box-shadow: 0 16rpx 36rpx rgba(47, 95, 150, 0.16);
+}
+
+.device-card--disabled {
+  opacity: 0.6;
+}
+
+.device-card__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.device-card__name {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: #12233f;
+}
+
+.device-card__id {
+  margin-top: 12rpx;
+  font-size: 22rpx;
+  line-height: 1.6;
+  color: #6c7b91;
+  word-break: break-all;
+}
+
+.device-card__side {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: space-between;
+  text-align: right;
+}
+
+.device-card__signal {
+  font-size: 22rpx;
+  color: #365780;
+}
+
+.device-card__hint {
+  font-size: 22rpx;
+  color: #7b8ba2;
+}
+
+.scan-empty {
+  margin-top: 24rpx;
+  padding: 48rpx 28rpx;
+  background: rgba(255, 255, 255, 0.9);
+  text-align: center;
+}
+
+.scan-empty__title {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: #1e3356;
+}
+
+.scan-empty__desc {
+  margin-top: 16rpx;
+  font-size: 24rpx;
+  line-height: 1.7;
+  color: #70819a;
+}
